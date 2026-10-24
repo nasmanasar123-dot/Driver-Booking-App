@@ -1,0 +1,18 @@
+# /etc/systemd/system/driver-booking-api.service
+[Unit]
+Description=Driver Booking API
+After=network.target
+
+[Service]
+Type=simple
+User=driverbooking
+WorkingDirectory=/srv/driver-booking/apps/api
+Environment=NODE_ENV=production
+EnvironmentFile=/srv/driver-booking/apps/api/.env
+ExecStart=/usr/bin/node src/server.ts
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

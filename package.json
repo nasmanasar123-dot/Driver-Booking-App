@@ -1,0 +1,25 @@
+{
+  "name": "driver-booking",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n api,customer,driver,admin -c blue,green,yellow,magenta \"npm:dev:*\"",
+    "dev:api": "npm run dev -w apps/api",
+    "dev:customer": "npm run dev -w apps/customer",
+    "dev:driver": "npm run dev -w apps/driver",
+    "dev:admin": "npm run dev -w apps/admin",
+    "build": "npm run build -w apps/customer -w apps/driver -w apps/admin",
+    "test": "npm test -w apps/api",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  },
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true,
+    "esbuild@0.28.2": true
+  }
+}

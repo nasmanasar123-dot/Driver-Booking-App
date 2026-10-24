@@ -1,0 +1,15 @@
+{
+  "name": "@app/shared",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./styles.css": "./src/styles.css"
+  },
+  "dependencies": {
+    "socket.io-client": "^4.8.1"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  }
+}
