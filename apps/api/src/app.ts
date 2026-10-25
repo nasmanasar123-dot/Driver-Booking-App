@@ -9,11 +9,14 @@ import { config } from './config.ts';
 import type { Ctx, GoogleProfile } from './context.ts';
 import type { DB } from './db.ts';
 import { HttpError } from './errors.ts';
+import { razorpayFromConfig, type Razorpay } from './payments.ts';
 import { attachRealtime, type Realtime } from './realtime.ts';
 import { adminRoutes } from './routes/admin.ts';
 import { customerRoutes } from './routes/customer.ts';
 import { driverRoutes } from './routes/driver.ts';
 import { meRoutes } from './routes/me.ts';
+import { paymentRoutes } from './routes/payments.ts';
+import { serveApps } from './static.ts';
 
 const googleClient = new OAuth2Client();
 
@@ -31,8 +34,10 @@ export type AppDeps = {
   db: DB;
   realtime?: Realtime; // defaults to Socket.IO on the app's HTTP server
   verifyGoogleToken?: Ctx['verifyGoogleToken'];
+  razorpay?: Razorpay | null; // defaults to the keys in config
   logger?: boolean;
   sweep?: boolean; // run the stale-request sweeper on a timer
+  serveApps?: boolean; // also serve the built web apps (production)
 };
 
 export async function buildApp(deps: AppDeps) {
@@ -45,6 +50,7 @@ export async function buildApp(deps: AppDeps) {
     db: deps.db,
     realtime,
     verifyGoogleToken: deps.verifyGoogleToken ?? verifyGoogleToken,
+    razorpay: deps.razorpay === undefined ? razorpayFromConfig() : deps.razorpay,
   };
 
   app.setErrorHandler((err, req, reply) => {
@@ -59,12 +65,19 @@ export async function buildApp(deps: AppDeps) {
     return reply.code(500).send({ error: 'Something went wrong' });
   });
 
-  app.get('/health', async () => ({ ok: true }));
-  await app.register(authRoutes(ctx), { prefix: '/auth' });
-  await app.register(meRoutes(ctx), { prefix: '/me' });
-  await app.register(customerRoutes(ctx), { prefix: '/customer' });
-  await app.register(driverRoutes(ctx), { prefix: '/driver' });
-  await app.register(adminRoutes(ctx), { prefix: '/admin' });
+  await app.register(
+    async (api) => {
+      api.get('/health', async () => ({ ok: true }));
+      await api.register(authRoutes(ctx), { prefix: '/auth' });
+      await api.register(meRoutes(ctx), { prefix: '/me' });
+      await api.register(customerRoutes(ctx), { prefix: '/customer' });
+      await api.register(driverRoutes(ctx), { prefix: '/driver' });
+      await api.register(adminRoutes(ctx), { prefix: '/admin' });
+      await api.register(paymentRoutes(ctx), { prefix: '/payments' });
+    },
+    { prefix: '/api' },
+  );
+  if (deps.serveApps) await serveApps(app);
 
   if (deps.sweep) {
     const timer = setInterval(() => {

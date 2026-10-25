@@ -1,7 +1,8 @@
 import { z } from 'zod';
+import { config } from './config.ts';
 import type { DB } from './db.ts';
 
-// Amounts are in fils. Defaults are placeholders — set real numbers from the admin dashboard.
+// Amounts are in paise. Defaults are placeholders — set real numbers from the admin dashboard.
 export const pricingSchema = z
   .object({
     minimumMinutes: z.number().int().min(15),
@@ -22,12 +23,12 @@ export type Pricing = z.infer<typeof pricingSchema>;
 
 export const defaultPricing: Pricing = {
   minimumMinutes: 120, // first 2 hours...
-  minimumFare: 12000, // ...cost AED 120
+  minimumFare: 50000, // ...cost ₹500
   blockMinutes: 15, // then billed per 15 minutes...
-  blockFare: 1250, // ...at AED 12.50 (AED 50/hour)
-  oneWayFee: 3000, // AED 30 for the driver's trip back
+  blockFare: 6000, // ...at ₹60 (₹240/hour)
+  oneWayFee: 20000, // ₹200 for the driver's trip back
   nightSurchargePercent: 20,
-  nightStartHour: 22, // Dubai local time
+  nightStartHour: 22, // India local time
   nightEndHour: 6,
   commissionPercent: 20,
 };
@@ -43,11 +44,10 @@ export function savePricing(db: DB, pricing: Pricing) {
   ).run(JSON.stringify(pricing));
 }
 
-// Dubai is UTC+4 year-round (no daylight saving).
-export const dubaiHour = (date: Date) => (date.getUTCHours() + 4) % 24;
+export const localHour = (date: Date) => new Date(date.getTime() + config.utcOffsetMinutes * 60_000).getUTCHours();
 
 export function isNight(p: Pricing, date: Date) {
-  const h = dubaiHour(date);
+  const h = localHour(date);
   return p.nightStartHour > p.nightEndHour
     ? h >= p.nightStartHour || h < p.nightEndHour
     : h >= p.nightStartHour && h < p.nightEndHour;
@@ -63,7 +63,7 @@ export function calculateFare(
   const night = isNight(p, trip.startAt);
   if (night) fare += (fare * p.nightSurchargePercent) / 100;
   if (trip.tripType === 'one_way') fare += p.oneWayFee;
-  // Cash trips: round up to a whole dirham so drivers aren't dealing in fils.
+  // Cash trips: round up to a whole rupee so drivers aren't dealing in paise.
   fare = Math.ceil(fare / 100) * 100;
   const commission = Math.round((fare * p.commissionPercent) / 100);
   return { billedMinutes, night, fare, commission, driverEarning: fare - commission };

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
 import { beforeEach, test } from 'node:test';
 import { buildApp } from '../src/app.ts';
 import { sweepStaleRequests } from '../src/bookings.ts';
@@ -19,12 +20,22 @@ async function setup() {
     },
     // In tests the "Google ID token" is just the email address.
     verifyGoogleToken: async (email) => ({ sub: `google-${email}`, email, name: email.split('@')[0] }),
+    razorpay: {
+      keyId: 'rzp_test_key',
+      keySecret: RZP_KEY_SECRET,
+      webhookSecret: RZP_WEBHOOK_SECRET,
+      createOrder: async (order) => {
+        orders.push(order);
+        return { id: `order_${orders.length}` };
+      },
+    },
   });
+  const orders: { amount: number; receipt: string }[] = [];
 
   async function call(method: string, url: string, token?: string, body?: unknown) {
     const res = await app.inject({
       method: method as any,
-      url,
+      url: `/api${url}`, // every API route lives under /api
       headers: token ? { authorization: `Bearer ${token}` } : {},
       ...(body !== undefined ? { payload: body as any } : {}),
     });
@@ -42,9 +53,8 @@ async function setup() {
     const me = await call('GET', '/me', token);
     const profile = await call('PUT', '/driver/profile', token, {
       name: `Driver ${n}`,
-      phone: `05022200${String(n).padStart(2, '0')}`,
-      emiratesId: '784-1990-1234567-1',
-      licenseNumber: 'DL123456',
+      phone: `98472200${String(n).padStart(2, '0')}`,
+      licenseNumber: 'KL0720190012345',
       licenseExpiry: '2028-01-01',
       canDriveManual: false,
     });
@@ -56,11 +66,15 @@ async function setup() {
 
   createUser(db, { role: 'admin', email: 'ops@example.com', name: 'Ops' });
   const admin = await login('ops@example.com', 'admin');
-  return { db, app, ctx, call, login, approvedDriver, events, admin };
+  return { db, app, ctx, call, login, approvedDriver, events, admin, orders };
 }
 
-const DOWNTOWN = { lat: 25.1972, lng: 55.2744 };
-const MARINA = { lat: 25.0805, lng: 55.1403 }; // ~18 km from downtown
+const RZP_KEY_SECRET = 'test_key_secret';
+const RZP_WEBHOOK_SECRET = 'test_webhook_secret';
+const sign = (secret: string, data: string) => createHmac('sha256', secret).update(data).digest('hex');
+
+const DOWNTOWN = { lat: 9.9816, lng: 76.2817 }; // MG Road, Kochi
+const MARINA = { lat: 10.1076, lng: 76.3516 }; // Aluva, ~16 km from MG Road
 
 let t: Awaited<ReturnType<typeof setup>>;
 beforeEach(async () => {
@@ -69,8 +83,8 @@ beforeEach(async () => {
 
 async function customerWithCar(email = 'customer@example.com', transmission = 'automatic') {
   const token = await t.login(email, 'customer');
-  assert.equal((await t.call('PATCH', '/me', token, { name: 'Sara', phone: '050 111 2222' })).status, 200);
-  const car = await t.call('POST', '/customer/vehicles', token, { make: 'Toyota', model: 'Camry', plate: 'dubai a 12345', transmission });
+  assert.equal((await t.call('PATCH', '/me', token, { name: 'Sara', phone: '98471 12222' })).status, 200);
+  const car = await t.call('POST', '/customer/vehicles', token, { make: 'Toyota', model: 'Camry', plate: 'kl 07 ab 1234', transmission });
   assert.equal(car.status, 200);
   return { token, vehicleId: car.body.id as number };
 }
@@ -78,7 +92,7 @@ async function customerWithCar(email = 'customer@example.com', transmission = 'a
 const bookingBody = (vehicleId: number) => ({
   vehicleId,
   tripType: 'hourly',
-  pickup: { address: 'Burj Khalifa, Downtown Dubai', ...DOWNTOWN },
+  pickup: { address: 'MG Road, Kochi', ...DOWNTOWN },
   estimatedMinutes: 180,
 });
 
@@ -104,11 +118,11 @@ test('happy path: book, offer, accept, start with code, complete, settle cash co
 
   const accepted = await t.call('POST', `/driver/offers/${id}/accept`, near.token);
   assert.equal(accepted.status, 200);
-  assert.equal(accepted.body.customer.phone, '+971501112222');
+  assert.equal(accepted.body.customer.phone, '+919847112222');
 
   const assigned = await t.call('GET', `/customer/bookings/${id}`, customer.token);
   assert.equal(assigned.body.status, 'assigned');
-  assert.equal(assigned.body.driver.phone, '+971502220001');
+  assert.equal(assigned.body.driver.phone, '+919847220001');
   const otp = assigned.body.startOtp;
   assert.match(otp, /^\d{4}$/);
 
@@ -118,15 +132,15 @@ test('happy path: book, offer, accept, start with code, complete, settle cash co
   const done = await t.call('POST', `/driver/bookings/${id}/complete`, near.token);
   assert.equal(done.status, 200);
   assert.equal(done.body.status, 'completed');
-  assert.equal(done.body.finalFareFils % 100, 0);
-  assert.equal(done.body.commissionFils + done.body.driverEarningFils, done.body.finalFareFils);
+  assert.equal(done.body.finalFarePaise % 100, 0);
+  assert.equal(done.body.commissionPaise + done.body.driverEarningPaise, done.body.finalFarePaise);
 
   // Driver now owes the commission from the cash they collected.
   const ledger = await t.call('GET', '/driver/ledger', near.token);
-  assert.equal(ledger.body.balanceOwedFils, done.body.commissionFils);
+  assert.equal(ledger.body.balanceOwedPaise, done.body.commissionPaise);
 
-  assert.equal((await t.call('POST', `/admin/drivers/${near.id}/settlements`, t.admin, { amountFils: done.body.commissionFils })).status, 200);
-  assert.equal((await t.call('GET', '/driver/ledger', near.token)).body.balanceOwedFils, 0);
+  assert.equal((await t.call('POST', `/admin/drivers/${near.id}/settlements`, t.admin, { amountPaise: done.body.commissionPaise })).status, 200);
+  assert.equal((await t.call('GET', '/driver/ledger', near.token)).body.balanceOwedPaise, 0);
 
   assert.equal((await t.call('POST', `/customer/bookings/${id}/rate`, customer.token, { rating: 5 })).status, 200);
   assert.equal((await t.call('POST', `/customer/bookings/${id}/rate`, customer.token, { rating: 1 })).status, 409);
@@ -134,6 +148,100 @@ test('happy path: book, offer, accept, start with code, complete, settle cash co
   // Admins were pushed every status change.
   const pushed = t.events.filter((e) => e.event === 'booking:updated' && e.to === 'admins').map((e) => e.data.status);
   for (const s of ['requested', 'assigned', 'started', 'completed']) assert.ok(pushed.includes(s), s);
+});
+
+async function completedTrip(paymentMethod: 'cash' | 'online') {
+  const driver = await t.approvedDriver(1, t.admin);
+  const customer = await customerWithCar();
+  const { body } = await t.call('POST', '/customer/bookings', customer.token, { ...bookingBody(customer.vehicleId), paymentMethod });
+  await t.call('POST', `/driver/offers/${body.id}/accept`, driver.token);
+  const { startOtp } = (await t.call('GET', `/customer/bookings/${body.id}`, customer.token)).body;
+  await t.call('POST', `/driver/bookings/${body.id}/start`, driver.token, { otp: startOtp });
+  const done = await t.call('POST', `/driver/bookings/${body.id}/complete`, driver.token);
+  assert.equal(done.status, 200);
+  return { driver, customer, booking: done.body };
+}
+
+const webhook = (body: unknown, signature?: string) => {
+  const payload = JSON.stringify(body);
+  return t.app.inject({
+    method: 'POST',
+    url: '/api/payments/razorpay/webhook',
+    headers: { 'content-type': 'application/json', 'x-razorpay-signature': signature ?? sign(RZP_WEBHOOK_SECRET, payload) },
+    payload,
+  });
+};
+
+const capturedEvent = (orderId: string, paymentId = 'pay_1') => ({
+  event: 'payment.captured',
+  payload: { payment: { entity: { id: paymentId, order_id: orderId, amount: 0 } } },
+});
+
+test('online payment: customer pays after the trip, webhook confirms, driver is credited their earning', async () => {
+  const { driver, customer, booking } = await completedTrip('online');
+  assert.equal(booking.paymentMethod, 'online');
+  assert.equal(booking.paymentStatus, 'unpaid');
+  // Nothing in the driver's account until the money arrives.
+  assert.equal((await t.call('GET', '/driver/ledger', driver.token)).body.balanceOwedPaise, 0);
+  // The customer can't book again until they've paid.
+  assert.equal((await t.call('POST', '/customer/bookings', customer.token, bookingBody(customer.vehicleId))).status, 409);
+
+  const pay = await t.call('POST', `/customer/bookings/${booking.id}/pay`, customer.token);
+  assert.equal(pay.status, 200, JSON.stringify(pay.body));
+  assert.equal(pay.body.amountPaise, booking.finalFarePaise);
+  assert.equal(t.orders[0].amount, booking.finalFarePaise);
+  // Asking again reuses the same order instead of creating another.
+  assert.equal((await t.call('POST', `/customer/bookings/${booking.id}/pay`, customer.token)).body.orderId, pay.body.orderId);
+  assert.equal(t.orders.length, 1);
+
+  assert.equal((await webhook(capturedEvent(pay.body.orderId), 'bad-signature')).statusCode, 400);
+  assert.equal((await t.call('GET', `/customer/bookings/${booking.id}`, customer.token)).body.paymentStatus, 'unpaid');
+
+  assert.equal((await webhook(capturedEvent(pay.body.orderId))).statusCode, 200);
+  // Razorpay retries deliveries; a repeat must not credit the driver twice.
+  assert.equal((await webhook(capturedEvent(pay.body.orderId))).statusCode, 200);
+
+  assert.equal((await t.call('GET', `/customer/bookings/${booking.id}`, customer.token)).body.paymentStatus, 'paid');
+  const ledger = (await t.call('GET', '/driver/ledger', driver.token)).body;
+  assert.equal(ledger.balanceOwedPaise, -booking.driverEarningPaise);
+  assert.equal(ledger.entries.length, 1);
+  assert.ok(t.events.some((e) => e.to === `user:${driver.id}` && e.data.paymentStatus === 'paid'));
+
+  // Ops pays the driver out, which brings the account back to zero.
+  await t.call('POST', `/admin/drivers/${driver.id}/settlements`, t.admin, { amountPaise: booking.driverEarningPaise, direction: 'to_driver' });
+  assert.equal((await t.call('GET', '/driver/ledger', driver.token)).body.balanceOwedPaise, 0);
+  assert.equal((await t.call('POST', `/customer/bookings/${booking.id}/pay`, customer.token)).status, 409);
+});
+
+test('online payment: checkout callback is verified by signature', async () => {
+  const { customer, booking } = await completedTrip('online');
+  const { orderId } = (await t.call('POST', `/customer/bookings/${booking.id}/pay`, customer.token)).body;
+  const forged = await t.call('POST', `/customer/bookings/${booking.id}/pay/verify`, customer.token, { orderId, paymentId: 'pay_9', signature: 'nope' });
+  assert.equal(forged.status, 400);
+  const ok = await t.call('POST', `/customer/bookings/${booking.id}/pay/verify`, customer.token, {
+    orderId,
+    paymentId: 'pay_9',
+    signature: sign(RZP_KEY_SECRET, `${orderId}|pay_9`),
+  });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.paymentStatus, 'paid');
+  // The webhook arriving afterwards changes nothing.
+  assert.equal((await webhook(capturedEvent(orderId, 'pay_9'))).statusCode, 200);
+});
+
+test('online payment: unknown orders are ignored, ops can mark an unpaid trip as paid in cash', async () => {
+  assert.equal((await webhook(capturedEvent('order_from_another_app'))).statusCode, 200);
+  const { driver, booking } = await completedTrip('online');
+  const marked = await t.call('POST', `/admin/bookings/${booking.id}/mark-paid-cash`, t.admin);
+  assert.equal(marked.body.paymentMethod, 'cash');
+  assert.equal(marked.body.paymentStatus, 'paid');
+  assert.equal((await t.call('GET', '/driver/ledger', driver.token)).body.balanceOwedPaise, booking.commissionPaise);
+  assert.equal((await t.call('POST', `/admin/bookings/${booking.id}/mark-paid-cash`, t.admin)).status, 409);
+});
+
+test('cash trips are paid on completion', async () => {
+  const { booking } = await completedTrip('cash');
+  assert.equal(booking.paymentStatus, 'paid');
 });
 
 test('no nearby drivers -> admin dispatch queue -> manual assignment', async () => {
@@ -194,10 +302,10 @@ test('guards: service area, roles, approval, cash limit, cancellation', async ()
   const customer = await customerWithCar();
   const outside = await t.call('POST', '/customer/bookings', customer.token, {
     ...bookingBody(customer.vehicleId),
-    pickup: { address: 'Abu Dhabi Corniche', lat: 24.47, lng: 54.35 },
+    pickup: { address: 'Thrissur Round', lat: 10.5276, lng: 76.2144 },
   });
   assert.equal(outside.status, 400);
-  assert.match(outside.body.error, /Dubai/);
+  assert.match(outside.body.error, /Kochi/);
 
   assert.equal((await t.call('GET', '/admin/overview', customer.token)).status, 403);
 
@@ -237,8 +345,8 @@ test('a mobile number is required before booking, and must be unique', async () 
   assert.match(blocked.body.error, /mobile/);
 
   assert.equal((await t.call('PATCH', '/me', token, { phone: 'not a phone' })).status, 400);
-  await customerWithCar('first@example.com'); // takes 050 111 2222
-  assert.equal((await t.call('PATCH', '/me', token, { phone: '0501112222' })).status, 409);
+  await customerWithCar('first@example.com'); // takes 98471 12222
+  assert.equal((await t.call('PATCH', '/me', token, { phone: '09847112222' })).status, 409);
 });
 
 test('dev sign-in works without Google (development only)', async () => {

@@ -1,5 +1,5 @@
 import {
-  aed,
+  inr,
   createApi,
   dateTime,
   duration,
@@ -21,19 +21,18 @@ const api = createApi('driver-token');
 
 type DriverMe = {
   status: 'pending' | 'approved' | 'rejected' | 'suspended';
-  emiratesId: string | null;
   licenseNumber: string | null;
   licenseExpiry: string | null;
   canDriveManual: boolean;
   isOnline: boolean;
   adminNotes: string | null;
-  balanceOwedFils: number;
-  maxCashOwedFils: number;
+  balanceOwedPaise: number;
+  maxCashOwedPaise: number;
 };
 
 type Coords = { lat: number; lng: number };
-// Development only: pretend to be in Downtown Dubai so you can test from anywhere.
-const SIMULATED: Coords = { lat: 25.1985, lng: 55.2796 };
+// Development only: pretend to be in Edappally, Kochi so you can test from anywhere.
+const SIMULATED: Coords = { lat: 10.0258, lng: 76.3075 };
 
 export function App() {
   const token = useToken(api);
@@ -74,7 +73,6 @@ function Onboarding({ me, user, onSubmitted }: { me: DriverMe; user: User; onSub
   const [form, setForm] = useState({
     name: user.name ?? '',
     phone: user.phone ?? '',
-    emiratesId: me.emiratesId ?? '',
     licenseNumber: me.licenseNumber ?? '',
     licenseExpiry: me.licenseExpiry ?? '',
     canDriveManual: me.canDriveManual,
@@ -119,20 +117,16 @@ function Onboarding({ me, user, onSubmitted }: { me: DriverMe; user: User; onSub
       <form className="card stack" onSubmit={submit}>
         <h2>Your details</h2>
         <label className="field">
-          <span>Full name (as on Emirates ID)</span>
+          <span>Full name (as on driving licence)</span>
           <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
         </label>
         <label className="field">
           <span>Mobile number (customers will call you on this)</span>
-          <input type="tel" inputMode="tel" placeholder="05X XXX XXXX" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} required />
+          <input type="tel" inputMode="tel" placeholder="98XXX XXXXX" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} required />
         </label>
         <label className="field">
-          <span>Emirates ID number</span>
-          <input placeholder="784-XXXX-XXXXXXX-X" value={form.emiratesId} onChange={(e) => setForm({ ...form, emiratesId: e.target.value })} required />
-        </label>
-        <label className="field">
-          <span>UAE driving licence number</span>
-          <input value={form.licenseNumber} onChange={(e) => setForm({ ...form, licenseNumber: e.target.value })} required />
+          <span>Driving licence number</span>
+          <input placeholder="KL07 20190012345" value={form.licenseNumber} onChange={(e) => setForm({ ...form, licenseNumber: e.target.value })} required />
         </label>
         <label className="field">
           <span>Licence expiry</span>
@@ -200,7 +194,7 @@ const currentPosition = () =>
 function alertNewOffer(offer: Offer) {
   navigator.vibrate?.([300, 150, 300]);
   if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
-    new Notification('New booking request', { body: `${offer.pickup.address} · ${aed(offer.estimatedEarningFils)}` });
+    new Notification('New booking request', { body: `${offer.pickup.address} · ${inr(offer.estimatedEarningPaise)}` });
   }
 }
 
@@ -232,6 +226,7 @@ function Dashboard({ me, refreshMe }: { me: DriverMe; refreshMe: () => void }) {
       setNotice(`Booking #${bookingId} was reassigned by operations.`);
     },
     'booking:updated': (b: Booking) => {
+      setFinished((f) => (f?.id === b.id ? b : f));
       if (b.status === 'assigned' || b.status === 'started') setCurrent(b);
       else
         setCurrent((c) => {
@@ -279,14 +274,14 @@ function Dashboard({ me, refreshMe }: { me: DriverMe; refreshMe: () => void }) {
           {online ? 'Online' : 'Offline'}
         </label>
         <div style={{ textAlign: 'right' }}>
-          <p className="small muted">Commission owed</p>
-          <b style={{ color: me.balanceOwedFils > me.maxCashOwedFils * 0.8 ? 'var(--danger)' : undefined }}>{aed(me.balanceOwedFils)}</b>
+          <p className="small muted">{me.balanceOwedPaise < 0 ? 'Owed to you' : 'Commission owed'}</p>
+          <b style={{ color: me.balanceOwedPaise > me.maxCashOwedPaise * 0.8 ? 'var(--danger)' : undefined }}>{inr(Math.abs(me.balanceOwedPaise))}</b>
         </div>
       </div>
       {import.meta.env.DEV && (
         <label className="checkbox small muted">
           <input type="checkbox" checked={simulate} onChange={(e) => setSimulate(e.target.checked)} />
-          Simulate location in Downtown Dubai (dev only)
+          Simulate location in Edappally, Kochi (dev only)
         </label>
       )}
       {locationError && <p className="error">{locationError}</p>}
@@ -356,7 +351,7 @@ function OfferCard({ offer: o, onAccept, onDecline }: { offer: Offer; onAccept: 
     <div className="card highlight stack">
       <div className="row between">
         <h2>New request</h2>
-        <b>{aed(o.estimatedEarningFils)}</b>
+        <b>{inr(o.estimatedEarningPaise)}</b>
       </div>
       <dl className="kv">
         <dt>Pickup</dt>
@@ -371,6 +366,8 @@ function OfferCard({ offer: o, onAccept, onDecline }: { offer: Offer; onAccept: 
         <dd>
           {tripTypeLabel[o.tripType]} · ~{duration(o.estimatedMinutes)}
         </dd>
+        <dt>Payment</dt>
+        <dd>{o.paymentMethod === 'cash' ? 'Cash' : 'Customer pays online'}</dd>
         <dt>Car</dt>
         <dd>
           {o.vehicle.make} {o.vehicle.model} · {o.vehicle.transmission}
@@ -450,7 +447,7 @@ function CurrentTrip({
         </dd>
         <dt>Trip</dt>
         <dd>
-          {tripTypeLabel[b.tripType]} · ~{duration(b.estimatedMinutes)} · est. {aed(b.estimatedFareFils)} cash
+          {tripTypeLabel[b.tripType]} · ~{duration(b.estimatedMinutes)} · est. {inr(b.estimatedFarePaise)} · {b.paymentMethod === 'cash' ? 'cash' : 'customer pays online'}
         </dd>
       </dl>
 
@@ -507,15 +504,18 @@ function CurrentTrip({
 }
 
 function CollectCash({ booking: b, onDone }: { booking: Booking; onDone: () => void }) {
+  const online = b.paymentMethod === 'online';
+  const paid = b.paymentStatus === 'paid';
   return (
     <div className="card highlight stack" style={{ textAlign: 'center' }}>
-      <p className="muted">Collect from customer</p>
-      <p className="big">{aed(b.finalFareFils)}</p>
+      <p className="muted">{online ? 'Customer pays in their app' : 'Collect from customer'}</p>
+      <p className="big">{inr(b.finalFarePaise)}</p>
       <p className="small muted">
-        {duration(b.actualMinutes)} · your earning {aed(b.driverEarningFils)} · commission {aed(b.commissionFils)}
+        {duration(b.actualMinutes)} · your earning {inr(b.driverEarningPaise)} · commission {inr(b.commissionPaise)}
       </p>
+      {online && <p>{paid ? '✅ Paid online — your earning is added to your account.' : '⏳ Waiting for the customer to pay…'}</p>}
       <button className="btn btn-primary" onClick={onDone}>
-        Cash collected
+        {online ? 'Done' : 'Cash collected'}
       </button>
     </div>
   );
@@ -523,15 +523,15 @@ function CollectCash({ booking: b, onDone }: { booking: Booking; onDone: () => v
 
 function Earnings() {
   const [trips, setTrips] = useState<Booking[]>([]);
-  const [ledger, setLedger] = useState<{ balanceOwedFils: number; entries: LedgerEntry[] } | null>(null);
+  const [ledger, setLedger] = useState<{ balanceOwedPaise: number; entries: LedgerEntry[] } | null>(null);
 
   useEffect(() => {
     api.get<Booking[]>('/driver/bookings').then(setTrips);
-    api.get<{ balanceOwedFils: number; entries: LedgerEntry[] }>('/driver/ledger').then(setLedger);
+    api.get<{ balanceOwedPaise: number; entries: LedgerEntry[] }>('/driver/ledger').then(setLedger);
   }, []);
 
   const completed = trips.filter((t) => t.status === 'completed');
-  const earned = completed.reduce((sum, t) => sum + (t.driverEarningFils ?? 0), 0);
+  const earned = completed.reduce((sum, t) => sum + (t.driverEarningPaise ?? 0), 0);
 
   return (
     <div className="stack">
@@ -542,11 +542,11 @@ function Earnings() {
         </div>
         <div className="stat">
           <span className="muted small">Earned</span>
-          <b>{aed(earned)}</b>
+          <b>{inr(earned)}</b>
         </div>
         <div className="stat">
-          <span className="muted small">Commission owed</span>
-          <b>{aed(ledger?.balanceOwedFils)}</b>
+          <span className="muted small">{(ledger?.balanceOwedPaise ?? 0) < 0 ? 'Owed to you' : 'Commission owed'}</span>
+          <b>{ledger && inr(Math.abs(ledger.balanceOwedPaise))}</b>
         </div>
       </div>
 
@@ -558,22 +558,22 @@ function Earnings() {
             <div>
               <b>{dateTime(t.completedAt)}</b>
               <p className="small muted">
-                {duration(t.actualMinutes)} · fare {aed(t.finalFareFils)}
+                {duration(t.actualMinutes)} · fare {inr(t.finalFarePaise)}
               </p>
             </div>
-            <b>{aed(t.driverEarningFils)}</b>
+            <b>{inr(t.driverEarningPaise)}</b>
           </div>
         ))}
       </div>
 
-      <h3>Commission account</h3>
+      <h3>Account</h3>
       <div className="list">
         {ledger?.entries.map((e) => (
           <div key={e.id} className="card row between small">
             <span>
               {e.note} <span className="muted">· {dateTime(e.createdAt)}</span>
             </span>
-            <b>{e.amountFils > 0 ? '+' : '−'}{aed(Math.abs(e.amountFils))}</b>
+            <b>{e.amountPaise > 0 ? '+' : '−'}{inr(Math.abs(e.amountPaise))}</b>
           </div>
         ))}
       </div>

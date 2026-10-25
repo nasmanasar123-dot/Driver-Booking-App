@@ -1,7 +1,7 @@
-import type { BookingStatus, TripType } from './types.ts';
+import type { BookingStatus, PaymentMethod, TripType } from './types.ts';
 
-export const aed = (fils: number | null | undefined) =>
-  fils == null ? '—' : `AED ${(fils / 100).toLocaleString('en-AE', { minimumFractionDigits: fils % 100 ? 2 : 0 })}`;
+export const inr = (paise: number | null | undefined) =>
+  paise == null ? '—' : `₹${(paise / 100).toLocaleString('en-IN', { minimumFractionDigits: paise % 100 ? 2 : 0 })}`;
 
 export function duration(minutes: number | null | undefined) {
   if (minutes == null) return '—';
@@ -10,14 +10,14 @@ export function duration(minutes: number | null | undefined) {
   return h && m ? `${h}h ${m}m` : h ? `${h}h` : `${m}m`;
 }
 
-const dubai = new Intl.DateTimeFormat('en-AE', {
-  timeZone: 'Asia/Dubai',
+const local = new Intl.DateTimeFormat('en-IN', {
+  timeZone: 'Asia/Kolkata',
   day: 'numeric',
   month: 'short',
   hour: 'numeric',
   minute: '2-digit',
 });
-export const dateTime = (iso: string | null | undefined) => (iso ? dubai.format(new Date(iso)) : '—');
+export const dateTime = (iso: string | null | undefined) => (iso ? local.format(new Date(iso)) : '—');
 
 export const minutesSince = (iso: string) => Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 60000));
 
@@ -30,6 +30,8 @@ export const statusLabel: Record<BookingStatus, string> = {
 };
 
 export const tripTypeLabel: Record<TripType, string> = { hourly: 'Hourly', one_way: 'One-way' };
+
+export const paymentLabel: Record<PaymentMethod, string> = { cash: 'cash', online: 'pay online' };
 
 export const mapsLink = (lat: number | null, lng: number | null, address: string) =>
   lat != null && lng != null

@@ -20,9 +20,18 @@ export const config = {
     locationFreshSec: 300,
     sweepIntervalSec: 15,
   },
-  maxCashOwedFils: num(env.MAX_CASH_OWED_AED, 500) * 100,
-  // Rough bounding box around Dubai emirate; bookings outside it are rejected.
-  serviceArea: { name: 'Dubai', minLat: 24.6, maxLat: 25.45, minLng: 54.85, maxLng: 56.0 },
+  maxCashOwedPaise: num(env.MAX_CASH_OWED_INR, 3000) * 100,
+  // India Standard Time is UTC+5:30 year-round (no daylight saving).
+  utcOffsetMinutes: 330,
+  // Online payments are offered only when the key ID and secret are set (Razorpay Dashboard → Account & Settings → API Keys).
+  razorpay: {
+    keyId: env.RAZORPAY_KEY_ID ?? '',
+    keySecret: env.RAZORPAY_KEY_SECRET ?? '',
+    // Chosen by you when adding the webhook in Razorpay Dashboard → Account & Settings → Webhooks.
+    webhookSecret: env.RAZORPAY_WEBHOOK_SECRET ?? '',
+  },
+  // Rough bounding box around Kochi (Aluva to Tripunithura); bookings outside it are rejected.
+  serviceArea: { name: 'Kochi', minLat: 9.8, maxLat: 10.2, minLng: 76.1, maxLng: 76.5 },
 };
 
 if (config.isProd && config.jwtSecret === DEV_SECRET) {

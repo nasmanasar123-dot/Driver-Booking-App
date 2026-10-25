@@ -1,5 +1,5 @@
 import {
-  aed,
+  inr,
   createApi,
   dateTime,
   distanceKm,
@@ -23,7 +23,7 @@ type Overview = {
   driversOnline: number;
   driversPending: number;
   completedToday: number;
-  commissionOutstandingFils: number;
+  commissionOutstandingPaise: number;
 };
 
 type DriverStatus = 'pending' | 'approved' | 'rejected' | 'suspended';
@@ -32,7 +32,6 @@ type Driver = {
   name: string | null;
   phone: string;
   status: DriverStatus;
-  emiratesId: string | null;
   licenseNumber: string | null;
   licenseExpiry: string | null;
   canDriveManual: boolean;
@@ -41,7 +40,7 @@ type Driver = {
   lng: number | null;
   locationUpdatedAt: string | null;
   adminNotes: string | null;
-  balanceOwedFils: number;
+  balanceOwedPaise: number;
   activeBookingId: number | null;
   rating: number | null;
   tripsCompleted: number;
@@ -96,7 +95,7 @@ function Dashboard() {
           <Stat label="Drivers online" value={overview.driversOnline} />
           <Stat label="Pending approval" value={overview.driversPending} alert={overview.driversPending > 0} />
           <Stat label="Completed today" value={overview.completedToday} />
-          <Stat label="Commission outstanding" value={aed(overview.commissionOutstandingFils)} />
+          <Stat label="Commission outstanding" value={inr(overview.commissionOutstandingPaise)} />
         </div>
       )}
 
@@ -190,7 +189,7 @@ function DispatchCard({ booking: b, drivers, act }: { booking: Booking; drivers:
         )}
         <dt>Trip</dt>
         <dd>
-          {tripTypeLabel[b.tripType]} · ~{duration(b.estimatedMinutes)} · est. {aed(b.estimatedFareFils)}
+          {tripTypeLabel[b.tripType]} · ~{duration(b.estimatedMinutes)} · est. {inr(b.estimatedFarePaise)}
         </dd>
         <dt>Car</dt>
         <dd>
@@ -246,9 +245,10 @@ function Bookings({ version }: { version: number }) {
   const [status, setStatus] = useState<'' | BookingStatus>('');
   const [bookings, setBookings] = useState<Booking[]>([]);
 
-  useEffect(() => {
+  const reload = useCallback(() => {
     api.get<Booking[]>(`/admin/bookings${status ? `?status=${status}` : ''}`).then(setBookings);
-  }, [status, version]);
+  }, [status]);
+  useEffect(reload, [reload, version]);
 
   return (
     <div className="stack">
@@ -273,6 +273,7 @@ function Bookings({ version }: { version: number }) {
               <th>Time</th>
               <th>Fare</th>
               <th>Commission</th>
+              <th>Payment</th>
               <th>Rating</th>
             </tr>
           </thead>
@@ -292,8 +293,31 @@ function Bookings({ version }: { version: number }) {
                 <td>{b.driver?.name ?? '—'}</td>
                 <td>{tripTypeLabel[b.tripType]}</td>
                 <td>{duration(b.actualMinutes ?? b.estimatedMinutes)}</td>
-                <td>{aed(b.finalFareFils ?? b.estimatedFareFils)}</td>
-                <td>{aed(b.commissionFils)}</td>
+                <td>{inr(b.finalFarePaise ?? b.estimatedFarePaise)}</td>
+                <td>{inr(b.commissionPaise)}</td>
+                <td>
+                  {b.paymentMethod}
+                  {b.status === 'completed' && (
+                    <div className="small">
+                      {b.paymentStatus === 'paid' ? (
+                        'paid'
+                      ) : (
+                        <>
+                          <span className="error">unpaid</span>{' '}
+                          <button
+                            className="btn btn-sm"
+                            onClick={() =>
+                              confirm('Customer paid the driver in cash instead? The driver will owe the commission.') &&
+                              api.post(`/admin/bookings/${b.id}/mark-paid-cash`).then(reload, (e) => alert(e.message))
+                            }
+                          >
+                            Paid in cash
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </td>
                 <td>
                   {b.rating ? `${b.rating}★` : '—'}
                   {b.customerComment && <div className="small muted">{b.customerComment}</div>}
@@ -349,12 +373,11 @@ function Drivers({ onChange }: { onChange: () => void }) {
             <tr>
               <th>Driver</th>
               <th>Status</th>
-              <th>Emirates ID</th>
               <th>Licence</th>
               <th>Manual</th>
               <th>Trips</th>
               <th>Rating</th>
-              <th>Owes</th>
+              <th>Owes (− = we owe)</th>
               <th />
             </tr>
           </thead>
@@ -369,7 +392,6 @@ function Drivers({ onChange }: { onChange: () => void }) {
                   <span className={`badge ${d.status}`}>{d.status}</span>{' '}
                   {d.isOnline && <span className="badge online">online</span>}
                 </td>
-                <td>{d.emiratesId ?? '—'}</td>
                 <td>
                   {d.licenseNumber ?? '—'}
                   {d.licenseExpiry && <div className="small muted">exp. {d.licenseExpiry}</div>}
@@ -377,7 +399,7 @@ function Drivers({ onChange }: { onChange: () => void }) {
                 <td>{d.canDriveManual ? 'Yes' : 'No'}</td>
                 <td>{d.tripsCompleted}</td>
                 <td>{d.rating ? `${d.rating}★` : '—'}</td>
-                <td>{aed(d.balanceOwedFils)}</td>
+                <td>{inr(d.balanceOwedPaise)}</td>
                 <td>
                   <div className="row">
                     {d.status !== 'approved' && d.licenseNumber && (
@@ -414,18 +436,19 @@ function DriverAccount({ driver, onChange, onClose }: { driver: Driver; onChange
   const [entries, setEntries] = useState<LedgerEntry[]>([]);
   const [amount, setAmount] = useState('');
   const [note, setNote] = useState('');
+  const [direction, setDirection] = useState<'from_driver' | 'to_driver'>('from_driver');
   const [error, setError] = useState('');
 
   const load = useCallback(() => {
     api.get<LedgerEntry[]>(`/admin/drivers/${driver.id}/ledger`).then(setEntries);
   }, [driver.id]);
-  useEffect(load, [load, driver.balanceOwedFils]);
+  useEffect(load, [load, driver.balanceOwedPaise]);
 
   const settle = async (e: FormEvent) => {
     e.preventDefault();
     setError('');
     try {
-      await api.post(`/admin/drivers/${driver.id}/settlements`, { amountFils: Math.round(Number(amount) * 100), note: note || undefined });
+      await api.post(`/admin/drivers/${driver.id}/settlements`, { amountPaise: Math.round(Number(amount) * 100), note: note || undefined, direction });
       setAmount('');
       setNote('');
       onChange();
@@ -438,16 +461,21 @@ function DriverAccount({ driver, onChange, onClose }: { driver: Driver; onChange
     <div className="card stack">
       <div className="row between">
         <h2>
-          {driver.name ?? driver.phone} — owes {aed(driver.balanceOwedFils)}
+          {driver.name ?? driver.phone} —{' '}
+          {driver.balanceOwedPaise < 0 ? `we owe them ${inr(-driver.balanceOwedPaise)}` : `owes ${inr(driver.balanceOwedPaise)}`}
         </h2>
         <button className="btn btn-ghost btn-sm" onClick={onClose}>
           Close
         </button>
       </div>
       <form className="row" onSubmit={settle}>
-        <input type="number" min="1" step="0.01" placeholder="Amount received (AED)" value={amount} onChange={(e) => setAmount(e.target.value)} required style={{ maxWidth: 220 }} />
+        <select value={direction} onChange={(e) => setDirection(e.target.value as typeof direction)} style={{ maxWidth: 200 }}>
+          <option value="from_driver">Received from driver</option>
+          <option value="to_driver">Paid to driver</option>
+        </select>
+        <input type="number" min="1" step="0.01" placeholder="Amount (₹)" value={amount} onChange={(e) => setAmount(e.target.value)} required style={{ maxWidth: 220 }} />
         <input className="grow" placeholder="Note (e.g. cash at office, bank transfer ref)" value={note} onChange={(e) => setNote(e.target.value)} />
-        <button className="btn btn-primary">Record settlement</button>
+        <button className="btn btn-primary">Record</button>
       </form>
       {error && <p className="error">{error}</p>}
       <div className="table-wrap">
@@ -459,8 +487,8 @@ function DriverAccount({ driver, onChange, onClose }: { driver: Driver; onChange
                 <td>{e.kind}</td>
                 <td>{e.note}</td>
                 <td style={{ textAlign: 'right' }}>
-                  {e.amountFils > 0 ? '+' : '−'}
-                  {aed(Math.abs(e.amountFils))}
+                  {e.amountPaise > 0 ? '+' : '−'}
+                  {inr(Math.abs(e.amountPaise))}
                 </td>
               </tr>
             ))}
@@ -471,7 +499,7 @@ function DriverAccount({ driver, onChange, onClose }: { driver: Driver; onChange
   );
 }
 
-// Edited in AED / hours here; the API stores fils / minutes.
+// Edited in rupees / hours here; the API stores paise / minutes.
 function PricingForm() {
   const [p, setP] = useState<Pricing | null>(null);
   const [saved, setSaved] = useState(false);
@@ -511,7 +539,7 @@ function PricingForm() {
       <p className="muted small">Changes apply to new bookings only.</p>
       <div className="row">
         <label className="field grow">
-          <span>Minimum fare (AED)</span>
+          <span>Minimum fare (₹)</span>
           <input type="number" min="0" step="0.5" {...money('minimumFare')} />
         </label>
         <label className="field grow">
@@ -521,7 +549,7 @@ function PricingForm() {
       </div>
       <div className="row">
         <label className="field grow">
-          <span>Then per block (AED)</span>
+          <span>Then per block (₹)</span>
           <input type="number" min="0" step="0.25" {...money('blockFare')} />
         </label>
         <label className="field grow">
@@ -529,9 +557,9 @@ function PricingForm() {
           <input type="number" min="5" step="5" {...plain('blockMinutes')} />
         </label>
       </div>
-      <p className="muted small">= {aed(hourly)} per hour after the minimum.</p>
+      <p className="muted small">= {inr(hourly)} per hour after the minimum.</p>
       <label className="field">
-        <span>One-way trip fee (AED)</span>
+        <span>One-way trip fee (₹)</span>
         <input type="number" min="0" step="1" {...money('oneWayFee')} />
       </label>
       <div className="row">

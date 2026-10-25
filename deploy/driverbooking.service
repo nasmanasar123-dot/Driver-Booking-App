@@ -1,0 +1,13 @@
+# User service on the course server: ~/.config/systemd/user/driverbooking.service
+# Settings and secrets live in ~/.config/driverbooking.env (chmod 600), never in git.
+[Unit]
+Description=driverbooking
+
+[Service]
+WorkingDirectory=%h/apps/driverbooking
+EnvironmentFile=%h/.config/driverbooking.env
+ExecStart=/usr/bin/node apps/api/src/server.ts
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

@@ -12,12 +12,12 @@ declare module '@fastify/jwt' {
   }
 }
 
-// Accepts local UAE formats (05x..., 9715x...) and any E.164 number.
+// Accepts Indian mobile formats (98xxxxxxxx, 098xxxxxxxx, 9198xxxxxxxx) and any E.164 number.
 export function normalizePhone(input: string): string {
   let p = input.replace(/[\s\-()]/g, '');
   if (p.startsWith('00')) p = '+' + p.slice(2);
-  else if (p.startsWith('05')) p = '+971' + p.slice(1);
-  else if (p.startsWith('971')) p = '+' + p;
+  else if (/^0?[6-9]\d{9}$/.test(p)) p = '+91' + p.slice(-10);
+  else if (/^91[6-9]\d{9}$/.test(p)) p = '+' + p;
   if (!/^\+[1-9]\d{7,14}$/.test(p)) throw new HttpError(400, 'Enter a valid mobile number');
   return p;
 }

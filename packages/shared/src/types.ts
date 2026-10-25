@@ -3,6 +3,7 @@ export type Role = 'customer' | 'driver' | 'admin';
 export type BookingStatus = 'requested' | 'assigned' | 'started' | 'completed' | 'cancelled';
 export type TripType = 'hourly' | 'one_way';
 export type Transmission = 'automatic' | 'manual';
+export type PaymentMethod = 'cash' | 'online';
 
 export type User = { id: number; role: Role; name: string | null; phone: string | null; email: string | null };
 export type Party = { id: number; name: string | null; phone: string | null };
@@ -17,10 +18,11 @@ export type Booking = {
   dropoff: Place | null;
   vehicle: Vehicle;
   estimatedMinutes: number;
-  estimatedFareFils: number;
+  estimatedFarePaise: number;
   actualMinutes: number | null;
-  finalFareFils: number | null;
-  paymentMethod: 'cash';
+  finalFarePaise: number | null;
+  paymentMethod: PaymentMethod;
+  paymentStatus: 'unpaid' | 'paid';
   cancelledBy: 'customer' | 'admin' | null;
   cancelReason: string | null;
   rating: number | null;
@@ -33,8 +35,8 @@ export type Booking = {
   startOtp?: string | null;
   driver?: Party | null;
   customer?: Party | null;
-  commissionFils?: number | null;
-  driverEarningFils?: number | null;
+  commissionPaise?: number | null;
+  driverEarningPaise?: number | null;
   needsDispatch?: boolean;
   customerComment?: string | null;
 };
@@ -46,16 +48,17 @@ export type Offer = {
   dropoffAddress: string | null;
   vehicle: { make: string; model: string; transmission: Transmission };
   estimatedMinutes: number;
-  estimatedFareFils: number;
-  estimatedEarningFils: number;
+  estimatedFarePaise: number;
+  estimatedEarningPaise: number;
+  paymentMethod: PaymentMethod;
   requestedAt: string;
 };
 
 export type LedgerEntry = {
   id: number;
   bookingId: number | null;
-  kind: 'commission' | 'settlement' | 'adjustment';
-  amountFils: number;
+  kind: 'commission' | 'settlement' | 'earning' | 'payout' | 'adjustment';
+  amountPaise: number;
   note: string | null;
   createdAt: string;
 };

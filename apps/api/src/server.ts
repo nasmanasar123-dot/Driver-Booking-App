@@ -3,7 +3,7 @@ import { config } from './config.ts';
 import { openDb } from './db.ts';
 
 const db = openDb(config.dbPath);
-const { app } = await buildApp({ db, logger: true, sweep: true });
+const { app } = await buildApp({ db, logger: true, sweep: true, serveApps: config.isProd });
 
 await app.listen({ port: config.port, host: config.host });
 

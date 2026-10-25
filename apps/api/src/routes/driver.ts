@@ -23,7 +23,6 @@ const location = z.object({ lat: z.number().min(-90).max(90), lng: z.number().mi
 
 type DriverRow = {
   status: 'pending' | 'approved' | 'rejected' | 'suspended';
-  emirates_id: string | null;
   license_number: string | null;
   license_expiry: string | null;
   can_drive_manual: number;
@@ -42,14 +41,13 @@ export function driverRoutes(ctx: Ctx) {
       const d = getDriver(req.user.sub);
       return {
         status: d.status,
-        emiratesId: d.emirates_id,
         licenseNumber: d.license_number,
         licenseExpiry: d.license_expiry,
         canDriveManual: !!d.can_drive_manual,
         isOnline: !!d.is_online,
         adminNotes: d.admin_notes,
-        balanceOwedFils: driverBalance(db, req.user.sub),
-        maxCashOwedFils: config.maxCashOwedFils,
+        balanceOwedPaise: driverBalance(db, req.user.sub),
+        maxCashOwedPaise: config.maxCashOwedPaise,
       };
     });
 
@@ -59,7 +57,6 @@ export function driverRoutes(ctx: Ctx) {
         .object({
           name: z.string().trim().min(2).max(100),
           phone: z.string(),
-          emiratesId: z.string().trim().regex(/^784-?\d{4}-?\d{7}-?\d$/, 'Emirates ID looks like 784-XXXX-XXXXXXX-X'),
           licenseNumber: z.string().trim().min(3).max(30),
           licenseExpiry: z.iso.date(),
           canDriveManual: z.boolean(),
@@ -75,9 +72,9 @@ export function driverRoutes(ctx: Ctx) {
       db.transaction(() => {
         db.prepare('UPDATE users SET name = ?, phone = ? WHERE id = ?').run(p.name, phone, req.user.sub);
         db.prepare(
-          `UPDATE drivers SET emirates_id = ?, license_number = ?, license_expiry = ?, can_drive_manual = ?, status = 'pending'
+          `UPDATE drivers SET license_number = ?, license_expiry = ?, can_drive_manual = ?, status = 'pending'
            WHERE user_id = ?`,
-        ).run(p.emiratesId, p.licenseNumber, p.licenseExpiry, p.canDriveManual ? 1 : 0, req.user.sub);
+        ).run(p.licenseNumber, p.licenseExpiry, p.canDriveManual ? 1 : 0, req.user.sub);
       })();
       return { ok: true };
     });
@@ -86,7 +83,7 @@ export function driverRoutes(ctx: Ctx) {
       const body = z.object({ online: z.boolean(), location: location.optional() }).parse(req.body);
       if (body.online) {
         if (getDriver(req.user.sub).status !== 'approved') throw new HttpError(403, 'Your account is not approved yet');
-        if (driverBalance(db, req.user.sub) > config.maxCashOwedFils) {
+        if (driverBalance(db, req.user.sub) > config.maxCashOwedPaise) {
           throw new HttpError(403, 'Please settle your outstanding commission before going online');
         }
       }
@@ -169,9 +166,9 @@ export function driverRoutes(ctx: Ctx) {
     });
 
     app.get('/ledger', async (req) => ({
-      balanceOwedFils: driverBalance(db, req.user.sub),
+      balanceOwedPaise: driverBalance(db, req.user.sub),
       entries: db
-        .prepare('SELECT id, booking_id AS bookingId, kind, amount AS amountFils, note, created_at AS createdAt FROM ledger_entries WHERE driver_id = ? ORDER BY id DESC LIMIT 100')
+        .prepare('SELECT id, booking_id AS bookingId, kind, amount AS amountPaise, note, created_at AS createdAt FROM ledger_entries WHERE driver_id = ? ORDER BY id DESC LIMIT 100')
         .all(req.user.sub),
     }));
   };

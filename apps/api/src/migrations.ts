@@ -1,5 +1,5 @@
 // Append-only: never edit a migration that has shipped; add a new entry instead.
-// All money columns are integers in fils (1 AED = 100 fils). All timestamps are ISO-8601 UTC strings.
+// All money columns are integers in paise (1 INR = 100 paise). All timestamps are ISO-8601 UTC strings.
 export const migrations: string[] = [
   `
   CREATE TABLE users (
@@ -15,7 +15,6 @@ export const migrations: string[] = [
   CREATE TABLE drivers (
     user_id INTEGER PRIMARY KEY REFERENCES users(id),
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'suspended')),
-    emirates_id TEXT,
     license_number TEXT,
     license_expiry TEXT,
     can_drive_manual INTEGER NOT NULL DEFAULT 0,
@@ -61,8 +60,8 @@ export const migrations: string[] = [
     final_fare INTEGER,
     commission INTEGER,
     driver_earning INTEGER,
-    payment_method TEXT NOT NULL DEFAULT 'cash',
-    cash_collected INTEGER NOT NULL DEFAULT 0,
+    payment_method TEXT NOT NULL DEFAULT 'cash' CHECK (payment_method IN ('cash', 'online')),
+    payment_status TEXT NOT NULL DEFAULT 'unpaid' CHECK (payment_status IN ('unpaid', 'paid')),
     cancelled_by TEXT,
     cancel_reason TEXT,
     customer_rating INTEGER,
@@ -87,18 +86,32 @@ export const migrations: string[] = [
   );
   CREATE INDEX booking_offers_driver ON booking_offers(driver_id, status);
 
-  -- Positive amount = driver owes the platform (commission on cash trips); negative = driver paid us.
+  -- Positive amount = driver owes the platform (commission on cash trips, payouts we made);
+  -- negative = platform owes the driver (settlements they paid us, their earning on online-paid trips).
   CREATE TABLE ledger_entries (
     id INTEGER PRIMARY KEY,
     driver_id INTEGER NOT NULL REFERENCES users(id),
     booking_id INTEGER REFERENCES bookings(id),
-    kind TEXT NOT NULL CHECK (kind IN ('commission', 'settlement', 'adjustment')),
+    kind TEXT NOT NULL CHECK (kind IN ('commission', 'settlement', 'earning', 'payout', 'adjustment')),
     amount INTEGER NOT NULL,
     note TEXT,
     created_by INTEGER REFERENCES users(id),
     created_at TEXT NOT NULL
   );
   CREATE INDEX ledger_driver ON ledger_entries(driver_id);
+
+  -- One row per Razorpay order. A booking can have several if the customer retries after a failed payment.
+  CREATE TABLE payments (
+    id INTEGER PRIMARY KEY,
+    booking_id INTEGER NOT NULL REFERENCES bookings(id),
+    razorpay_order_id TEXT NOT NULL UNIQUE,
+    razorpay_payment_id TEXT,
+    amount INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('created', 'paid')),
+    created_at TEXT NOT NULL,
+    paid_at TEXT
+  );
+  CREATE INDEX payments_booking ON payments(booking_id);
 
   CREATE TABLE settings (
     key TEXT PRIMARY KEY,

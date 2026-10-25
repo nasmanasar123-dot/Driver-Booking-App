@@ -1,16 +1,18 @@
 import {
-  aed,
+  inr,
   createApi,
   dateTime,
   duration,
   GoogleLogin,
   minutesSince,
   OPEN_STATUSES,
+  paymentLabel,
   statusLabel,
   tripTypeLabel,
   useSocket,
   useToken,
   type Booking,
+  type PaymentMethod,
   type TripType,
   type User,
   type Vehicle,
@@ -22,13 +24,14 @@ const api = createApi('customer-token');
 export function App() {
   const token = useToken(api);
   if (!token) {
-    return <GoogleLogin api={api} app="customer" title="Driver Booking" subtitle="A professional driver for your car, anywhere in Dubai." />;
+    return <GoogleLogin api={api} app="customer" title="Driver Booking" subtitle="A professional driver for your car, anywhere in Kochi." />;
   }
   return <Home />;
 }
 
 function Home() {
   const [user, setUser] = useState<User | null>(null);
+  const [onlinePayments, setOnlinePayments] = useState(false);
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [error, setError] = useState('');
 
@@ -37,6 +40,9 @@ function Home() {
     api.get<Booking[]>('/customer/bookings').then(setBookings, (e) => setError(e.message));
   }, []);
   useEffect(refresh, [refresh]);
+  useEffect(() => {
+    api.get<{ online: boolean }>('/payments/config').then((c) => setOnlinePayments(c.online), () => {});
+  }, []);
 
   const upsert = (b: Booking) => setBookings((list) => [b, ...list.filter((x) => x.id !== b.id)].sort((x, y) => y.id - x.id));
 
@@ -45,6 +51,7 @@ function Home() {
   if (!user) return <main className="page">{error ? <p className="error">{error}</p> : <p className="muted">Loading…</p>}</main>;
 
   const active = bookings.find((b) => OPEN_STATUSES.includes(b.status));
+  const toPay = bookings.find((b) => b.status === 'completed' && b.paymentStatus === 'unpaid');
   const toRate = bookings.find((b) => b.status === 'completed' && b.rating == null && b.completedAt && minutesSince(b.completedAt) < 24 * 60);
 
   return (
@@ -59,10 +66,12 @@ function Home() {
         <ContactDetails user={user} onDone={setUser} />
       ) : active ? (
         <ActiveBooking booking={active} onChange={upsert} />
+      ) : toPay ? (
+        <PayTrip booking={toPay} user={user} onChange={upsert} />
       ) : (
         <>
           {toRate && <RateTrip booking={toRate} onChange={upsert} />}
-          <BookForm onBooked={upsert} />
+          <BookForm onBooked={upsert} onlinePayments={onlinePayments} />
         </>
       )}
       <History bookings={bookings.filter((b) => b !== active)} />
@@ -95,7 +104,7 @@ function ContactDetails({ user, onDone }: { user: User; onDone: (u: User) => voi
       </label>
       <label className="field">
         <span>Mobile number</span>
-        <input type="tel" inputMode="tel" autoComplete="tel" placeholder="05X XXX XXXX" value={phone} onChange={(e) => setPhone(e.target.value)} required />
+        <input type="tel" inputMode="tel" autoComplete="tel" placeholder="98XXX XXXXX" value={phone} onChange={(e) => setPhone(e.target.value)} required />
       </label>
       <button className="btn btn-primary">Continue</button>
       {error && <p className="error">{error}</p>}
@@ -104,10 +113,10 @@ function ContactDetails({ user, onDone }: { user: User; onDone: (u: User) => voi
 }
 
 const DURATIONS = [120, 180, 240, 300, 360, 480, 600, 720];
-// Lets you test from outside Dubai during development.
-const SAMPLE_LOCATION = { lat: 25.1972, lng: 55.2744, address: 'Burj Khalifa, Downtown Dubai' };
+// Lets you test from outside Kochi during development.
+const SAMPLE_LOCATION = { lat: 10.0271, lng: 76.3084, address: 'Lulu Mall, Edappally, Kochi' };
 
-function BookForm({ onBooked }: { onBooked: (b: Booking) => void }) {
+function BookForm({ onBooked, onlinePayments }: { onBooked: (b: Booking) => void; onlinePayments: boolean }) {
   const [vehicles, setVehicles] = useState<Vehicle[] | null>(null);
   const [vehicleId, setVehicleId] = useState<number | null>(null);
   const [tripType, setTripType] = useState<TripType>('hourly');
@@ -115,7 +124,8 @@ function BookForm({ onBooked }: { onBooked: (b: Booking) => void }) {
   const [address, setAddress] = useState('');
   const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [dropoff, setDropoff] = useState('');
-  const [estimate, setEstimate] = useState<{ fareFils: number; night: boolean } | null>(null);
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
+  const [estimate, setEstimate] = useState<{ farePaise: number; night: boolean } | null>(null);
   const [locating, setLocating] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -128,7 +138,7 @@ function BookForm({ onBooked }: { onBooked: (b: Booking) => void }) {
   }, []);
 
   useEffect(() => {
-    api.post<{ fareFils: number; night: boolean }>('/customer/estimate', { tripType, estimatedMinutes: minutes }).then(setEstimate, () => setEstimate(null));
+    api.post<{ farePaise: number; night: boolean }>('/customer/estimate', { tripType, estimatedMinutes: minutes }).then(setEstimate, () => setEstimate(null));
   }, [tripType, minutes]);
 
   const locate = () => {
@@ -161,6 +171,7 @@ function BookForm({ onBooked }: { onBooked: (b: Booking) => void }) {
           estimatedMinutes: minutes,
           pickup: { address, ...coords },
           dropoff: tripType === 'one_way' ? { address: dropoff } : undefined,
+          paymentMethod: onlinePayments ? paymentMethod : 'cash',
         }),
       );
     } catch (err) {
@@ -254,10 +265,24 @@ function BookForm({ onBooked }: { onBooked: (b: Booking) => void }) {
       {estimate && (
         <div className="row between">
           <span className="muted">Estimated fare{estimate.night ? ' (incl. night charge)' : ''}</span>
-          <b>{aed(estimate.fareFils)}</b>
+          <b>{inr(estimate.farePaise)}</b>
         </div>
       )}
-      <p className="muted small">Pay your driver in cash at the end. Final fare is based on actual time.</p>
+      {onlinePayments ? (
+        <div className="field">
+          <span>Payment — after the trip</span>
+          <div className="row">
+            {(['cash', 'online'] as const).map((m) => (
+              <button type="button" key={m} className={`btn grow ${paymentMethod === m ? 'btn-primary' : ''}`} onClick={() => setPaymentMethod(m)}>
+                {m === 'cash' ? 'Cash to driver' : 'UPI / card in app'}
+              </button>
+            ))}
+          </div>
+          <span className="small">Final fare is based on actual time.</span>
+        </div>
+      ) : (
+        <p className="muted small">Pay your driver in cash at the end. Final fare is based on actual time.</p>
+      )}
 
       {error && <p className="error">{error}</p>}
       <button className="btn btn-primary" disabled={busy}>
@@ -288,7 +313,7 @@ function AddVehicle({ onAdded }: { onAdded: (v: Vehicle) => void }) {
         <input className="grow" placeholder="Make (e.g. Toyota)" value={form.make} onChange={set('make')} required />
         <input className="grow" placeholder="Model (e.g. Land Cruiser)" value={form.model} onChange={set('model')} required />
       </div>
-      <input placeholder="Plate (e.g. Dubai A 12345)" value={form.plate} onChange={set('plate')} required />
+      <input placeholder="Registration no. (e.g. KL 07 AB 1234)" value={form.plate} onChange={set('plate')} required />
       <select value={form.transmission} onChange={set('transmission')}>
         <option value="automatic">Automatic</option>
         <option value="manual">Manual</option>
@@ -367,7 +392,7 @@ function ActiveBooking({ booking: b, onChange }: { booking: Booking; onChange: (
         )}
         <dt>Estimate</dt>
         <dd>
-          {aed(b.estimatedFareFils)} for {duration(b.estimatedMinutes)} · cash
+          {inr(b.estimatedFarePaise)} for {duration(b.estimatedMinutes)} · {paymentLabel[b.paymentMethod]}
         </dd>
       </dl>
 
@@ -381,6 +406,89 @@ function ActiveBooking({ booking: b, onChange }: { booking: Booking; onChange: (
   );
 }
 
+// Razorpay Checkout is loaded on demand, only when someone pays.
+let checkoutScript: Promise<void> | null = null;
+function loadCheckout() {
+  checkoutScript ??= new Promise<void>((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://checkout.razorpay.com/v1/checkout.js';
+    s.onload = () => resolve();
+    s.onerror = () => {
+      checkoutScript = null;
+      reject(new Error("Couldn't load the payment page. Check your connection and try again."));
+    };
+    document.head.appendChild(s);
+  });
+  return checkoutScript;
+}
+
+type RazorpaySuccess = { razorpay_order_id: string; razorpay_payment_id: string; razorpay_signature: string };
+declare global {
+  interface Window {
+    Razorpay: new (options: Record<string, unknown>) => { open: () => void; on: (event: string, cb: (r: { error: { description: string } }) => void) => void };
+  }
+}
+
+function PayTrip({ booking: b, user, onChange }: { booking: Booking; user: User; onChange: (b: Booking) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const pay = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      await loadCheckout();
+      const order = await api.post<{ keyId: string; orderId: string; amountPaise: number; currency: string }>(`/customer/bookings/${b.id}/pay`);
+      const checkout = new window.Razorpay({
+        key: order.keyId,
+        order_id: order.orderId,
+        amount: order.amountPaise,
+        currency: order.currency,
+        name: 'Driver Booking',
+        description: `Trip #${b.id}`,
+        prefill: { name: user.name ?? '', email: user.email ?? '', contact: user.phone ?? '' },
+        theme: { color: '#0b6e4f' },
+        handler: async (r: RazorpaySuccess) => {
+          try {
+            onChange(
+              await api.post<Booking>(`/customer/bookings/${b.id}/pay/verify`, {
+                orderId: r.razorpay_order_id,
+                paymentId: r.razorpay_payment_id,
+                signature: r.razorpay_signature,
+              }),
+            );
+          } catch {
+            // The webhook will still confirm it; the screen updates live when it does.
+            setError('Payment received — confirming, this can take a moment.');
+          }
+          setBusy(false);
+        },
+        modal: { ondismiss: () => setBusy(false) },
+      });
+      checkout.on('payment.failed', (r) => setError(r.error.description));
+      checkout.open();
+    } catch (err) {
+      setError((err as Error).message);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="card highlight stack" style={{ textAlign: 'center' }}>
+      <h2>Trip complete</h2>
+      <p className="muted small">
+        {duration(b.actualMinutes)} with {b.driver?.name ?? 'your driver'}
+      </p>
+      <p className="big">{inr(b.finalFarePaise)}</p>
+      <button className="btn btn-primary" onClick={pay} disabled={busy}>
+        {busy ? 'Opening payment…' : `Pay ${inr(b.finalFarePaise)}`}
+      </button>
+      <p className="muted small">UPI, cards and netbanking via Razorpay.</p>
+      {error && <p className="error">{error}</p>}
+    </section>
+  );
+}
+
 function RateTrip({ booking: b, onChange }: { booking: Booking; onChange: (b: Booking) => void }) {
   const [rating, setRating] = useState(0);
   const [comment, setComment] = useState('');
@@ -389,9 +497,9 @@ function RateTrip({ booking: b, onChange }: { booking: Booking; onChange: (b: Bo
 
   return (
     <section className="card stack">
-      <h2>Trip complete — {aed(b.finalFareFils)}</h2>
+      <h2>Trip complete — {inr(b.finalFarePaise)}</h2>
       <p className="muted small">
-        {duration(b.actualMinutes)} with {b.driver?.name ?? 'your driver'}. Please pay the driver in cash if you haven't.
+        {duration(b.actualMinutes)} with {b.driver?.name ?? 'your driver'}.{b.paymentMethod === 'cash' && " Please pay the driver in cash if you haven't."}
       </p>
       <div className="stars" role="radiogroup" aria-label="Rating">
         {[1, 2, 3, 4, 5].map((n) => (
@@ -428,7 +536,7 @@ function History({ bookings }: { bookings: Booking[] }) {
             </div>
             <div style={{ textAlign: 'right' }}>
               <span className={`badge ${b.status}`}>{statusLabel[b.status]}</span>
-              {b.finalFareFils != null && <p className="small">{aed(b.finalFareFils)}</p>}
+              {b.finalFarePaise != null && <p className="small">{inr(b.finalFarePaise)}</p>}
             </div>
           </div>
         ))}

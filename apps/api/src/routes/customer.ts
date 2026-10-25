@@ -11,6 +11,7 @@ import {
 } from '../bookings.ts';
 import type { Ctx } from '../context.ts';
 import { HttpError } from '../errors.ts';
+import { startPayment, verifyCheckout } from '../payments.ts';
 import { calculateFare, getPricing } from '../pricing.ts';
 
 const idParam = z.object({ id: z.coerce.number().int() });
@@ -61,7 +62,7 @@ export function customerRoutes(ctx: Ctx) {
     app.post('/estimate', async (req) => {
       const body = z.object({ tripType, estimatedMinutes }).parse(req.body);
       const fare = calculateFare(getPricing(db), { tripType: body.tripType, minutes: body.estimatedMinutes, startAt: new Date() });
-      return { fareFils: fare.fare, billedMinutes: fare.billedMinutes, night: fare.night };
+      return { farePaise: fare.fare, billedMinutes: fare.billedMinutes, night: fare.night };
     });
 
     app.post('/bookings', async (req) => {
@@ -72,6 +73,7 @@ export function customerRoutes(ctx: Ctx) {
           pickup: z.object({ address, lat: z.number(), lng: z.number() }),
           dropoff: z.object({ address, lat: z.number().optional(), lng: z.number().optional() }).optional(),
           estimatedMinutes,
+          paymentMethod: z.enum(['cash', 'online']).default('cash'),
         })
         .parse(req.body);
       const id = createBooking(ctx, req.user.sub, body);
@@ -104,6 +106,22 @@ export function customerRoutes(ctx: Ctx) {
         .object({ rating: z.number().int().min(1).max(5), comment: z.string().max(500).optional() })
         .parse(req.body);
       rateBooking(ctx, req.user.sub, id, rating, comment);
+      return customerView(db, getBooking(db, id)!);
+    });
+
+    // Online payment: get a Razorpay order to open Checkout with...
+    app.post('/bookings/:id/pay', async (req) => {
+      const { id } = idParam.parse(req.params);
+      return startPayment(ctx, req.user.sub, id);
+    });
+
+    // ...then send back what Checkout returned on success.
+    app.post('/bookings/:id/pay/verify', async (req) => {
+      const { id } = idParam.parse(req.params);
+      const p = z
+        .object({ orderId: z.string().min(1), paymentId: z.string().min(1), signature: z.string().min(1) })
+        .parse(req.body);
+      verifyCheckout(ctx, req.user.sub, id, p);
       return customerView(db, getBooking(db, id)!);
     });
   };

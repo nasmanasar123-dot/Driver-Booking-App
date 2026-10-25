@@ -10,6 +10,7 @@ import { calculateFare, getPricing, type Pricing } from './pricing.ts';
 
 export type BookingStatus = 'requested' | 'assigned' | 'started' | 'completed' | 'cancelled';
 export type TripType = 'hourly' | 'one_way';
+export type PaymentMethod = 'cash' | 'online';
 
 export type BookingRow = {
   id: number;
@@ -34,7 +35,8 @@ export type BookingRow = {
   final_fare: number | null;
   commission: number | null;
   driver_earning: number | null;
-  cash_collected: number;
+  payment_method: PaymentMethod;
+  payment_status: 'unpaid' | 'paid';
   cancelled_by: string | null;
   cancel_reason: string | null;
   customer_rating: number | null;
@@ -82,10 +84,11 @@ function baseView(db: DB, b: BookingRow) {
     dropoff: b.dropoff_address ? { address: b.dropoff_address, lat: b.dropoff_lat, lng: b.dropoff_lng } : null,
     vehicle: vehicleOf(db, b.vehicle_id),
     estimatedMinutes: b.estimated_minutes,
-    estimatedFareFils: b.estimated_fare,
+    estimatedFarePaise: b.estimated_fare,
     actualMinutes: b.actual_minutes,
-    finalFareFils: b.final_fare,
-    paymentMethod: 'cash' as const,
+    finalFarePaise: b.final_fare,
+    paymentMethod: b.payment_method,
+    paymentStatus: b.payment_status,
     cancelledBy: b.cancelled_by,
     cancelReason: b.cancel_reason,
     rating: b.customer_rating,
@@ -106,8 +109,8 @@ export const customerView = (db: DB, b: BookingRow) => ({
 export const driverView = (db: DB, b: BookingRow) => ({
   ...baseView(db, b),
   customer: party(db, b.customer_id),
-  commissionFils: b.commission,
-  driverEarningFils: b.driver_earning,
+  commissionPaise: b.commission,
+  driverEarningPaise: b.driver_earning,
 });
 
 export const adminView = (db: DB, b: BookingRow) => ({
@@ -129,8 +132,9 @@ export function offerView(db: DB, b: BookingRow) {
     dropoffAddress: b.dropoff_address,
     vehicle: { make: v.make, model: v.model, transmission: v.transmission },
     estimatedMinutes: b.estimated_minutes,
-    estimatedFareFils: b.estimated_fare,
-    estimatedEarningFils: b.estimated_fare - Math.round((b.estimated_fare * pricing.commissionPercent) / 100),
+    estimatedFarePaise: b.estimated_fare,
+    estimatedEarningPaise: b.estimated_fare - Math.round((b.estimated_fare * pricing.commissionPercent) / 100),
+    paymentMethod: b.payment_method,
     requestedAt: b.requested_at,
   };
 }
@@ -214,12 +218,18 @@ export type NewBooking = {
   pickup: { address: string; lat: number; lng: number };
   dropoff?: { address: string; lat?: number; lng?: number };
   estimatedMinutes: number;
+  paymentMethod: PaymentMethod;
 };
 
 export function createBooking(ctx: Ctx, customerId: number, input: NewBooking): number {
   const { db } = ctx;
   const phone = db.prepare('SELECT phone FROM users WHERE id = ?').pluck().get(customerId);
   if (!phone) throw new HttpError(400, 'Please add your mobile number before booking');
+  if (input.paymentMethod === 'online' && !ctx.razorpay) throw new HttpError(400, 'Online payment is not available yet');
+  const unpaid = db
+    .prepare("SELECT 1 FROM bookings WHERE customer_id = ? AND status = 'completed' AND payment_status = 'unpaid'")
+    .get(customerId);
+  if (unpaid) throw new HttpError(409, 'Please pay for your last trip first');
 
   const area = config.serviceArea;
   const { lat, lng } = input.pickup;
@@ -245,8 +255,8 @@ export function createBooking(ctx: Ctx, customerId: number, input: NewBooking): 
     .prepare(
       `INSERT INTO bookings (customer_id, vehicle_id, trip_type, status, pickup_address, pickup_lat, pickup_lng,
          dropoff_address, dropoff_lat, dropoff_lng, estimated_minutes, estimated_fare, pricing, start_otp,
-         offered_at, requested_at)
-       VALUES (?, ?, ?, 'requested', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         payment_method, offered_at, requested_at)
+       VALUES (?, ?, ?, 'requested', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       customerId,
@@ -262,6 +272,7 @@ export function createBooking(ctx: Ctx, customerId: number, input: NewBooking): 
       estimate.fare,
       JSON.stringify(pricing),
       String(randomInt(1000, 10000)),
+      input.paymentMethod,
       ts,
       ts,
     );
@@ -358,7 +369,23 @@ export function startTrip(ctx: Ctx, driverId: number, bookingId: number, otp: st
   publishBooking(ctx, bookingId);
 }
 
-// Ends the trip, prices it from actual time, and records the commission the driver owes from the cash collected.
+// The driver collected the fare in cash, so they now owe the platform its commission.
+// Call inside a transaction; the booking must be completed and unpaid.
+function recordCashPayment(db: DB, bookingId: number) {
+  const r = db
+    .prepare(
+      "UPDATE bookings SET payment_method = 'cash', payment_status = 'paid' WHERE id = ? AND status = 'completed' AND payment_status = 'unpaid'",
+    )
+    .run(bookingId);
+  if (r.changes === 0) throw new HttpError(409, 'This booking is already paid');
+  const b = getBooking(db, bookingId)!;
+  db.prepare(
+    "INSERT INTO ledger_entries (driver_id, booking_id, kind, amount, note, created_at) VALUES (?, ?, 'commission', ?, ?, ?)",
+  ).run(b.driver_id, bookingId, b.commission, `Commission on booking #${bookingId}`, now());
+}
+
+// Ends the trip and prices it from actual time. Cash trips are paid on the spot; online trips wait for
+// the customer to pay in the app (see payments.ts).
 export function completeTrip(ctx: Ctx, driverId: number, bookingId: number) {
   const { db } = ctx;
   const b = mustGet(db, bookingId);
@@ -370,15 +397,20 @@ export function completeTrip(ctx: Ctx, driverId: number, bookingId: number) {
     const r = db
       .prepare(
         `UPDATE bookings SET status = 'completed', completed_at = ?, actual_minutes = ?, final_fare = ?,
-           commission = ?, driver_earning = ?, cash_collected = 1
+           commission = ?, driver_earning = ?
          WHERE id = ? AND status = 'started'`,
       )
       .run(now(), minutes, fare.fare, fare.commission, fare.driverEarning, bookingId);
     if (r.changes === 0) throw new HttpError(409, 'This trip cannot be completed');
-    db.prepare(
-      "INSERT INTO ledger_entries (driver_id, booking_id, kind, amount, note, created_at) VALUES (?, ?, 'commission', ?, ?, ?)",
-    ).run(driverId, bookingId, fare.commission, `Commission on booking #${bookingId}`, now());
+    if (b.payment_method === 'cash') recordCashPayment(db, bookingId);
   })();
+  publishBooking(ctx, bookingId);
+}
+
+// Ops fallback when an online-payment customer paid the driver in cash instead.
+export function adminMarkPaidInCash(ctx: Ctx, bookingId: number) {
+  mustGet(ctx.db, bookingId);
+  ctx.db.transaction(() => recordCashPayment(ctx.db, bookingId))();
   publishBooking(ctx, bookingId);
 }
 

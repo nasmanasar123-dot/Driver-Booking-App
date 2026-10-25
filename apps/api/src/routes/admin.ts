@@ -1,7 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { requireRole } from '../auth.ts';
-import { adminAssign, adminView, cancelBooking, getBooking, type BookingRow } from '../bookings.ts';
+import { config } from '../config.ts';
+import { adminAssign, adminMarkPaidInCash, adminView, cancelBooking, getBooking, type BookingRow } from '../bookings.ts';
 import type { Ctx } from '../context.ts';
 import { HttpError } from '../errors.ts';
 import { getPricing, pricingSchema, savePricing } from '../pricing.ts';
@@ -16,7 +17,7 @@ export function adminRoutes(ctx: Ctx) {
 
     app.get('/overview', async () => {
       const count = (sql: string, ...params: unknown[]) => db.prepare(sql).pluck().get(...params) as number;
-      const today = new Date(Date.now() + 4 * 3600_000).toISOString().slice(0, 10); // Dubai date
+      const today = new Date(Date.now() + config.utcOffsetMinutes * 60_000).toISOString().slice(0, 10); // local date
       return {
         needsDispatch: count("SELECT COUNT(*) FROM bookings WHERE status = 'requested' AND needs_dispatch = 1"),
         active: count("SELECT COUNT(*) FROM bookings WHERE status IN ('requested', 'assigned', 'started')"),
@@ -26,7 +27,7 @@ export function adminRoutes(ctx: Ctx) {
           "SELECT COUNT(*) FROM bookings WHERE status = 'completed' AND date(completed_at, '+4 hours') = ?",
           today,
         ),
-        commissionOutstandingFils: count('SELECT COALESCE(SUM(amount), 0) FROM ledger_entries'),
+        commissionOutstandingPaise: count('SELECT COALESCE(SUM(amount), 0) FROM ledger_entries'),
       };
     });
 
@@ -67,16 +68,22 @@ export function adminRoutes(ctx: Ctx) {
       return adminView(db, getBooking(db, id)!);
     });
 
+    app.post('/bookings/:id/mark-paid-cash', async (req) => {
+      const { id } = idParam.parse(req.params);
+      adminMarkPaidInCash(ctx, id);
+      return adminView(db, getBooking(db, id)!);
+    });
+
     app.get('/drivers', async (req) => {
       const { status } = z
         .object({ status: z.enum(['pending', 'approved', 'rejected', 'suspended']).optional() })
         .parse(req.query);
       return db
         .prepare(
-          `SELECT u.id, u.name, u.phone, d.status, d.emirates_id AS emiratesId, d.license_number AS licenseNumber,
+          `SELECT u.id, u.name, u.phone, d.status, d.license_number AS licenseNumber,
              d.license_expiry AS licenseExpiry, d.can_drive_manual AS canDriveManual, d.is_online AS isOnline,
              d.lat, d.lng, d.location_updated_at AS locationUpdatedAt, d.admin_notes AS adminNotes,
-             (SELECT COALESCE(SUM(amount), 0) FROM ledger_entries l WHERE l.driver_id = u.id) AS balanceOwedFils,
+             (SELECT COALESCE(SUM(amount), 0) FROM ledger_entries l WHERE l.driver_id = u.id) AS balanceOwedPaise,
              (SELECT id FROM bookings b WHERE b.driver_id = u.id AND b.status IN ('assigned', 'started')) AS activeBookingId,
              (SELECT ROUND(AVG(customer_rating), 1) FROM bookings b WHERE b.driver_id = u.id) AS rating,
              (SELECT COUNT(*) FROM bookings b WHERE b.driver_id = u.id AND b.status = 'completed') AS tripsCompleted
@@ -108,22 +115,29 @@ export function adminRoutes(ctx: Ctx) {
       const { id } = idParam.parse(req.params);
       return db
         .prepare(
-          'SELECT id, booking_id AS bookingId, kind, amount AS amountFils, note, created_at AS createdAt FROM ledger_entries WHERE driver_id = ? ORDER BY id DESC',
+          'SELECT id, booking_id AS bookingId, kind, amount AS amountPaise, note, created_at AS createdAt FROM ledger_entries WHERE driver_id = ? ORDER BY id DESC',
         )
         .all(id);
     });
 
-    // Driver handed over cash commission: recorded as a negative entry that reduces what they owe.
+    // Money changing hands between ops and a driver. "from_driver": they handed over cash commission
+    // (negative entry, reduces what they owe). "to_driver": we paid out their online earnings (positive entry).
     app.post('/drivers/:id/settlements', async (req) => {
       const { id } = idParam.parse(req.params);
-      const { amountFils, note } = z
-        .object({ amountFils: z.number().int().positive(), note: z.string().max(300).optional() })
+      const { amountPaise, note, direction } = z
+        .object({
+          amountPaise: z.number().int().positive(),
+          note: z.string().max(300).optional(),
+          direction: z.enum(['from_driver', 'to_driver']).default('from_driver'),
+        })
         .parse(req.body);
       const isDriver = db.prepare('SELECT 1 FROM drivers WHERE user_id = ?').get(id);
       if (!isDriver) throw new HttpError(404, 'Driver not found');
+      const [kind, amount, defaultNote] =
+        direction === 'from_driver' ? ['settlement', -amountPaise, 'Cash settlement'] : ['payout', amountPaise, 'Payout to driver'];
       db.prepare(
-        "INSERT INTO ledger_entries (driver_id, kind, amount, note, created_by, created_at) VALUES (?, 'settlement', ?, ?, ?, ?)",
-      ).run(id, -amountFils, note ?? 'Cash settlement', req.user.sub, new Date().toISOString());
+        'INSERT INTO ledger_entries (driver_id, kind, amount, note, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      ).run(id, kind, amount, note ?? defaultNote, req.user.sub, new Date().toISOString());
       return { ok: true };
     });
 
